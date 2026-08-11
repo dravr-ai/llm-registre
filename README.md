@@ -43,7 +43,11 @@ public, a precise inventory of incomplete defences — "this check is bypassable
 roadmap. The code comment stays deliberately thin (it names the limited thing, nothing more); the
 reasoning and the residual risk live in the tracker.
 
-So the tracker is never hardcoded. Point it wherever you like, public or private.
+**One register per project.** A register is scoped to a product, not to an organisation or a
+person: the debt of one project is noise in another's list, its labels are different, and its
+access list is different. A multi-repo product (a workspace and its satellite crates) shares one
+register; two unrelated products get two. This tool never assumes a shared one — every repo names
+its own, and the marker in code stays generic so nothing has to change when a register moves.
 
 ## Install
 

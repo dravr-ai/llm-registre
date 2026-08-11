@@ -1,0 +1,99 @@
+# ABOUTME: Reusable weekly review of a caller repo's feature-phases.yaml dark-launch ledger
+# ABOUTME: Opens one issue in the configured tracker per entry past its review_by date
+#
+# The tracker is an input, never a constant — it is normally a PRIVATE repo
+# separate from the code, because a review issue describes a feature whose
+# protection is deliberately disarmed. The token needs issues read/write on it;
+# the probe step fails loudly rather than silently skipping.
+#
+# Caller (the calling repo ships feature-phases.yaml at its root):
+#
+#   jobs:
+#     review:
+#       uses: dravr-ai/llm-registre/.github/workflows/feature-phase-review-reusable.yml@main
+#       with:
+#         tracker: your-org/your-private-tracker
+#         repo_label: your-repo
+#         title_prefix: your-repo
+#       secrets:
+#         tracker_token: ${{ secrets.YOUR_TRACKER_TOKEN }}
+name: "Reusable: Feature Phase Review"
+
+on:
+  workflow_call:
+    inputs:
+      tracker:
+        description: "owner/repo of the issue tracker to file into"
+        required: true
+        type: string
+      repo_label:
+        description: "Label naming the calling repo (e.g. my-service)"
+        required: true
+        type: string
+      title_prefix:
+        description: "Short prefix for issue titles (e.g. my-service)"
+        required: true
+        type: string
+      ledger:
+        description: "Path to the dark-launch ledger"
+        required: false
+        default: feature-phases.yaml
+        type: string
+    secrets:
+      tracker_token:
+        description: "Token with issues read/write on the tracker"
+        required: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe tracker access
+        env:
+          GH_TOKEN: ${{ secrets.tracker_token }}
+          TRACKER: ${{ inputs.tracker }}
+        run: |
+          set -euo pipefail
+          if ! gh issue list -R "$TRACKER" --limit 1 >/dev/null 2>&1; then
+            echo "::error::tracker_token cannot read $TRACKER — grant it issues read/write there."
+            exit 1
+          fi
+
+      - name: Open issues for overdue phase reviews
+        env:
+          GH_TOKEN: ${{ secrets.tracker_token }}
+          TRACKER: ${{ inputs.tracker }}
+          REPO_LABEL: ${{ inputs.repo_label }}
+          TITLE_PREFIX: ${{ inputs.title_prefix }}
+          LEDGER: ${{ inputs.ledger }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$LEDGER" ]; then
+            echo "No $LEDGER in the calling repo — nothing ledgered."
+            exit 0
+          fi
+          today="$(date -u +%F)"
+          # Fixed-shape parse (see the ledger header): emit "name<TAB>review_by"
+          # per entry. ISO dates compare correctly as strings.
+          awk '
+            /^  - name: /      { name=$0; sub(/^  - name: /, "", name) }
+            /^    review_by: / { d=$0; sub(/^    review_by: /, "", d); print name "\t" d }
+          ' "$LEDGER" | while IFS=$'\t' read -r name review_by; do
+            if [[ ! "$review_by" > "$today" ]]; then
+              title="[$TITLE_PREFIX] Phase review due: $name"
+              open_count="$(gh issue list -R "$TRACKER" --state open --search "in:title \"$title\"" --json number --jq 'length')"
+              if [ "$open_count" -eq 0 ]; then
+                gh issue create -R "$TRACKER" \
+                  --title "$title" \
+                  --label feature-phase --label "$REPO_LABEL" \
+                  --body "$(printf 'The dark-launch ledger entry **%s** in %s passed its review date (%s).\n\nDecide: advance the phase (arm the feature), or re-date the review — either way, edit %s in %s in the same change. Entry details (surface, current state, arming criterion) are in that file.\n\nOpened automatically by the llm-registre feature-phase review workflow.' "$name" "$REPO_LABEL" "$review_by" "$LEDGER" "$REPO_LABEL")"
+                echo "Opened: $title"
+              else
+                echo "Already open: $title"
+              fi
+            else
+              echo "Not due: $name (review_by $review_by)"
+            fi
+          done

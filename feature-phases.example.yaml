@@ -1,0 +1,18 @@
+# ABOUTME: Example dark-launch ledger — every feature that ships disarmed gets an entry here
+# ABOUTME: Fixed shape, one line per key: the review workflow parses it with awk, no YAML dep
+#
+# Format (the parsers depend on this indentation):
+#   - name: kebab-case-feature-name
+#     surface: path/to/the/flag/or/mode
+#     current: what ships today (the disarmed state)
+#     advance_when: the criterion that arms the next phase
+#     review_by: YYYY-MM-DD
+#
+# Keep values free of ": " and " #" so the unquoted scalars stay parseable.
+
+features:
+  - name: tainted-destructive-confirm
+    surface: src/guardian/policy.rs
+    current: defaults to Log (phase 1, measuring the base rate) — Confirm exists but is unarmed
+    advance_when: base rate is measured and a confirmation UX exists for the messaging channels
+    review_by: 2026-09-30

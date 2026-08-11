@@ -1,0 +1,20 @@
+# ABOUTME: Example llm-registre configuration — copy to registre.toml at your repo root
+# ABOUTME: Every key is optional; the matching REGISTRE_* environment variable wins over it
+
+# Where limitation issues are filed. Normally a PRIVATE tracker, separate from
+# the code repo: when the code is public, a precise inventory of incomplete
+# defences is a roadmap. Leave unset and the gates still enforce the format —
+# only the "file it in X" guidance goes generic.
+tracker = "your-org/your-private-tracker"
+
+# The word inside LIMITATION(...). Choose once and keep it: it is embedded in
+# every source comment across the codebase.
+marker = "registre"
+
+# Dark-launch ledger path — features that ship disarmed (flag off, shadow mode,
+# log-only phase), each with a review_by date.
+ledger = "feature-phases.yaml"
+
+# true = the ledger file must exist (an empty `features:` list is valid).
+# false = it is format-checked only when present.
+require_ledger = false

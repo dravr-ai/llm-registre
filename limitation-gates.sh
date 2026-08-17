@@ -116,9 +116,21 @@ for d in "$@"; do
     [ -d "$d" ] && SCAN_DIRS+=("$d")
 done
 
+if [ "$#" -eq 0 ]; then
+    echo -e "${RED}limitation-gates: no scan directories given${NC}"
+    echo "Usage: limitation-gates.sh <scan-dir>..."
+    exit 1
+fi
+
+# Callers may pass a superset (e.g. "crates src packages") and the ones that do
+# not exist are skipped. But if NOTHING matched, the invocation is wrong — a
+# typo'd path, or a caller whose shell did not word-split its directory list —
+# and a gate that silently passes on a bad invocation is worse than no gate.
 if [ "${#SCAN_DIRS[@]}" -eq 0 ]; then
-    echo -e "${YELLOW}limitation-gates: no scan directories exist, skipping${NC}"
-    exit 0
+    echo -e "${RED}limitation-gates: none of the given paths is a directory:${NC}"
+    for d in "$@"; do echo "  - $d"; done
+    echo "Nothing was scanned, so this is a failure rather than a pass."
+    exit 1
 fi
 
 if ! command -v rg >/dev/null 2>&1; then

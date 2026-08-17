@@ -34,20 +34,22 @@
 # USAGE
 #   limitation-gates.sh <scan-dir>...
 #
-#   Scans *.rs/*.ts/*.tsx under the given directories (non-existent ones are
-#   skipped, so callers may pass a superset), excluding test, bench, example,
-#   and generated trees.
+#   Scans the configured source extensions under the given directories
+#   (non-existent ones are skipped, so callers may pass a superset), excluding
+#   test, bench, example, and generated trees for every supported language.
 #
 #   Exit 0 clean, 1 violations found.
 #
 # CONFIGURATION (first match wins)
-#   environment      registre.toml        default
-#   ---------------  -------------------  -----------------------------------
-#   REGISTRE_TRACKER tracker = "o/r"      unset (messages stay generic)
-#   REGISTRE_MARKER  marker  = "registre" registre
-#   REGISTRE_LEDGER  ledger  = "path"     feature-phases.yaml
+#   environment         registre.toml            default
+#   ------------------  -----------------------  --------------------------
+#   REGISTRE_TRACKER    tracker = "o/r"          unset (generic messages)
+#   REGISTRE_MARKER     marker  = "registre"     registre
+#   REGISTRE_LEDGER     ledger  = "path"         feature-phases.yaml
 #   REGISTRE_REQUIRE_LEDGER
-#                    require_ledger = true false (ledger checked only if present)
+#                       require_ledger = true    false (checked if present)
+#   REGISTRE_EXTENSIONS extensions = "java,ts"   rs,ts,tsx
+#   REGISTRE_EXCLUDE    exclude = "**/legacy/**" none (adds to the built-ins)
 #
 # The marker word is configurable but should be treated as permanent once
 # chosen: it is embedded in every source comment across the codebase.
@@ -93,6 +95,12 @@ LEDGER_FILE="${REGISTRE_LEDGER:-$(config_value ledger)}"
 LEDGER_FILE="${LEDGER_FILE:-feature-phases.yaml}"
 REQUIRE_LEDGER="${REGISTRE_REQUIRE_LEDGER:-$(config_value require_ledger)}"
 REQUIRE_LEDGER="${REQUIRE_LEDGER:-false}"
+# Which source files to scan, comma-separated bare extensions. Defaults suit a
+# Rust/TypeScript repo; a Java project sets extensions = "java,ts,js".
+EXTENSIONS="${REGISTRE_EXTENSIONS:-$(config_value extensions)}"
+EXTENSIONS="${EXTENSIONS:-rs,ts,tsx}"
+# Extra exclude globs on top of the built-in test/generated conventions.
+EXCLUDE_EXTRA="${REGISTRE_EXCLUDE:-$(config_value exclude)}"
 
 # Where to tell the author to file the issue.
 if [ -n "$TRACKER" ]; then
@@ -118,15 +126,35 @@ if ! command -v rg >/dev/null 2>&1; then
     exit 1
 fi
 
-# Shared scan scope: sources only, never test/bench/example/generated trees.
+# Build the include globs from the configured extensions, and the exclude globs
+# from the language conventions for "this file is a test" plus any extra globs
+# the repo configured.
+INCLUDE_GLOBS=()
+for ext in $(printf '%s' "$EXTENSIONS" | tr ',' ' '); do
+    INCLUDE_GLOBS+=(-g "*.${ext}")
+done
+
+# Test/bench/example/generated trees, across the languages this tool supports.
 # NB: globs use `**` deliberately — rg's `*` never crosses `/`, so a `!*/tests/*`
-# form silently fails to exclude nested test directories.
+# form silently fails to exclude nested test directories. `src/test/**` is the
+# Maven/Gradle convention and is NOT covered by `**/tests/**`.
+EXCLUDE_GLOBS=(
+    -g '!**/tests/**' -g '!**/test/**' -g '!**/src/test/**' -g '!**/src/it/**'
+    -g '!**/benches/**' -g '!**/examples/**' -g '!**/testFixtures/**'
+    -g '!*_test.rs' -g '!*.test.ts' -g '!*.test.tsx' -g '!*.test.js'
+    -g '!*.spec.ts' -g '!*.spec.tsx' -g '!*.spec.js'
+    -g '!*Test.java' -g '!*Tests.java' -g '!*IT.java' -g '!*TestCase.java'
+    -g '!**/target/**' -g '!**/build/**' -g '!**/node_modules/**' -g '!**/dist/**'
+    -g '!**/generated/**' -g '!**/generated-sources/**' -g '!**/vendor/**'
+    -g '!**/*.min.js'
+)
+for extra in $(printf '%s' "$EXCLUDE_EXTRA" | tr ',' ' '); do
+    [ -n "$extra" ] && EXCLUDE_GLOBS+=(-g "!${extra}")
+done
+
 rg_scoped() {
     rg "$@" "${SCAN_DIRS[@]}" \
-        -g '*.rs' -g '*.ts' -g '*.tsx' \
-        -g '!**/tests/**' -g '!**/benches/**' -g '!**/examples/**' \
-        -g '!*_test.rs' -g '!*.test.ts' -g '!*.test.tsx' -g '!*.spec.ts' -g '!*.spec.tsx' \
-        -g '!**/target/**' -g '!**/node_modules/**' -g '!**/dist/**' \
+        "${INCLUDE_GLOBS[@]}" "${EXCLUDE_GLOBS[@]}" \
         2>/dev/null
 }
 

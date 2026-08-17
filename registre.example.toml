@@ -18,3 +18,11 @@ ledger = "feature-phases.yaml"
 # true = the ledger file must exist (an empty `features:` list is valid).
 # false = it is format-checked only when present.
 require_ledger = false
+
+# Source extensions to scan, comma-separated and bare (no dot). The default
+# suits a Rust/TypeScript repo; a Java project uses "java,ts,js".
+extensions = "rs,ts,tsx"
+
+# Extra exclude globs, on top of the built-in test/generated conventions
+# (**/tests/**, **/src/test/**, *Test.java, *.spec.ts, **/target/**, …).
+# exclude = "**/legacy/**,**/third_party/**"

@@ -20,7 +20,8 @@ ledger = "feature-phases.yaml"
 require_ledger = false
 
 # Source extensions to scan, comma-separated and bare (no dot). The default
-# suits a Rust/TypeScript repo; a Java project uses "java,ts,js".
+# suits a Rust/TypeScript repo; a Java project uses "java,ts,js", a Swift
+# package "swift" (its capitalised Tests/ tree is excluded like the others).
 extensions = "rs,ts,tsx"
 
 # Extra exclude globs, on top of the built-in test/generated conventions

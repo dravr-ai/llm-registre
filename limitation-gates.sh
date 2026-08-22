@@ -149,13 +149,16 @@ done
 # Test/bench/example/generated trees, across the languages this tool supports.
 # NB: globs use `**` deliberately — rg's `*` never crosses `/`, so a `!*/tests/*`
 # form silently fails to exclude nested test directories. `src/test/**` is the
-# Maven/Gradle convention and is NOT covered by `**/tests/**`.
+# Maven/Gradle convention and is NOT covered by `**/tests/**`; SwiftPM's
+# `Tests/` is capitalised, and rg globs are case-sensitive, so it gets its own
+# entry alongside the `*Tests.swift` file convention.
 EXCLUDE_GLOBS=(
     -g '!**/tests/**' -g '!**/test/**' -g '!**/src/test/**' -g '!**/src/it/**'
     -g '!**/benches/**' -g '!**/examples/**' -g '!**/testFixtures/**'
     -g '!*_test.rs' -g '!*.test.ts' -g '!*.test.tsx' -g '!*.test.js'
     -g '!*.spec.ts' -g '!*.spec.tsx' -g '!*.spec.js'
     -g '!*Test.java' -g '!*Tests.java' -g '!*IT.java' -g '!*TestCase.java'
+    -g '!**/Tests/**' -g '!*Tests.swift'
     -g '!**/target/**' -g '!**/build/**' -g '!**/node_modules/**' -g '!**/dist/**'
     -g '!**/generated/**' -g '!**/generated-sources/**' -g '!**/vendor/**'
     -g '!**/*.min.js'

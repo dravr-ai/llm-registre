@@ -30,6 +30,11 @@
 #   3. Feature-phase ledger format, when a ledger file is present (or required):
 #      every entry needs name / current / advance_when / review_by, so the
 #      companion review workflow can read it.
+#   4. File length cap (opt-in): any scanned file over max_file_lines fails —
+#      a file that outgrows its cap needs a helper extracted, not more scroll.
+#   5. Inline suppression allow-list (opt-in): #[allow(clippy::…)] or
+#      #[expect(clippy::…)] naming a lint outside allowed_inline_allows fails —
+#      one declared list instead of copies drifting across script and docs.
 #
 # USAGE
 #   limitation-gates.sh <scan-dir>...
@@ -50,6 +55,11 @@
 #                       require_ledger = true    false (checked if present)
 #   REGISTRE_EXTENSIONS extensions = "java,ts"   rs,ts,tsx
 #   REGISTRE_EXCLUDE    exclude = "**/legacy/**" none (adds to the built-ins)
+#   REGISTRE_MAX_FILE_LINES
+#                       max_file_lines = 500     unset (gate 4 off)
+#   REGISTRE_ALLOWED_INLINE_ALLOWS
+#                       allowed_inline_allows = "lint_a,lint_b"
+#                                                unset (gate 5 off)
 #
 # The marker word is configurable but should be treated as permanent once
 # chosen: it is embedded in every source comment across the codebase.
@@ -101,6 +111,18 @@ EXTENSIONS="${REGISTRE_EXTENSIONS:-$(config_value extensions)}"
 EXTENSIONS="${EXTENSIONS:-rs,ts,tsx}"
 # Extra exclude globs on top of the built-in test/generated conventions.
 EXCLUDE_EXTRA="${REGISTRE_EXCLUDE:-$(config_value exclude)}"
+# File length cap for gate 4. Unset or 0 disables the gate — the cap is repo
+# policy, not something this tool can guess.
+MAX_FILE_LINES="${REGISTRE_MAX_FILE_LINES:-$(config_value max_file_lines)}"
+case "$MAX_FILE_LINES" in
+    ''|0) MAX_FILE_LINES="" ;;
+    *[!0-9]*)
+        echo -e "${RED}limitation-gates: max_file_lines must be a whole number, got '${MAX_FILE_LINES}'${NC}"
+        exit 1 ;;
+esac
+# Clippy lints that may be silenced inline, comma-separated bare names, for
+# gate 5. Unset disables the gate.
+ALLOWED_INLINE_ALLOWS="${REGISTRE_ALLOWED_INLINE_ALLOWS:-$(config_value allowed_inline_allows)}"
 
 # Where to tell the author to file the issue.
 if [ -n "$TRACKER" ]; then
@@ -241,6 +263,64 @@ else
     fi
     if [ "$LEDGER_OK" = true ]; then
         gate_pass "Feature phase ledger well-formed (${LEDGER_ENTRIES:-0} dark-launched feature(s))"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Gate 4 (opt-in): file length cap
+# ---------------------------------------------------------------------------
+# A source file that outgrows its cap needs a focused helper extracted, not a
+# longer scroll. Runs over the same include/exclude scope as the other gates,
+# and only when the repo declares a cap.
+if [ -n "$MAX_FILE_LINES" ]; then
+    OVERSIZED=$(rg --files "${SCAN_DIRS[@]}" "${INCLUDE_GLOBS[@]}" "${EXCLUDE_GLOBS[@]}" 2>/dev/null \
+        | while IFS= read -r scanned_file; do
+            file_lines=$(wc -l < "$scanned_file" | tr -d '[:space:]')
+            if [ "${file_lines:-0}" -gt "$MAX_FILE_LINES" ]; then
+                printf '%s: %s lines\n' "$scanned_file" "$file_lines"
+            fi
+        done)
+    OVERSIZED_COUNT=$(printf '%s' "$OVERSIZED" | grep -c . 2>/dev/null || true)
+
+    if [ "${OVERSIZED_COUNT:-0}" -gt 0 ]; then
+        echo -e "${RED}Files over the ${MAX_FILE_LINES}-line cap — extract a focused helper:${NC}"
+        printf '%s\n' "$OVERSIZED" | head -10
+        gate_fail "$OVERSIZED_COUNT file(s) over ${MAX_FILE_LINES} lines"
+    else
+        gate_pass "No scanned file exceeds ${MAX_FILE_LINES} lines"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Gate 5 (opt-in): inline suppression allow-list
+# ---------------------------------------------------------------------------
+# An inline #[allow(clippy::…)] / #[expect(clippy::…)] silences a lint the
+# repo's manifest set to deny, and nothing else notices. When the repo declares
+# which lints may be silenced inline, everything outside that list fails — one
+# list in one place, instead of copies drifting across script, manifest, and
+# agent instructions.
+if [ -n "$ALLOWED_INLINE_ALLOWS" ]; then
+    ALLOWED_LIST=" $(printf '%s' "$ALLOWED_INLINE_ALLOWS" | tr ',' ' ') "
+    SUPPRESSION_LINES=$(rg_scoped -n '#\[(allow|expect)\(clippy::' || true)
+    BAD_SUPPRESSIONS=""
+    while IFS= read -r suppression_hit; do
+        [ -z "$suppression_hit" ] && continue
+        for lint in $(printf '%s' "$suppression_hit" | grep -oE 'clippy::[a-z0-9_]+' | sed 's/clippy:://'); do
+            case "$ALLOWED_LIST" in
+                *" $lint "*) ;;
+                *) BAD_SUPPRESSIONS="${BAD_SUPPRESSIONS}${suppression_hit} -> clippy::${lint}
+" ;;
+            esac
+        done
+    done <<< "$SUPPRESSION_LINES"
+    BAD_SUPPRESSION_COUNT=$(printf '%s' "$BAD_SUPPRESSIONS" | grep -c . 2>/dev/null || true)
+
+    if [ "${BAD_SUPPRESSION_COUNT:-0}" -gt 0 ]; then
+        echo -e "${RED}Inline clippy suppression(s) outside allowed_inline_allows — fix the code, or add the lint to the declared list:${NC}"
+        printf '%s' "$BAD_SUPPRESSIONS" | head -10
+        gate_fail "$BAD_SUPPRESSION_COUNT unapproved inline clippy suppression(s)"
+    else
+        gate_pass "All inline clippy suppressions are on the declared list"
     fi
 fi
 

@@ -27,3 +27,13 @@ extensions = "rs,ts,tsx"
 # Extra exclude globs, on top of the built-in test/generated conventions
 # (**/tests/**, **/src/test/**, *Test.java, *.spec.ts, **/target/**, …).
 # exclude = "**/legacy/**,**/third_party/**"
+
+# File length cap (gate 4). Unset or 0 = gate off; when set, any scanned file
+# over this many lines fails — extract a focused helper instead.
+# max_file_lines = 500
+
+# Clippy lints that may be silenced inline (gate 5), comma-separated bare
+# names. Unset = gate off; when set, any #[allow(clippy::…)] or
+# #[expect(clippy::…)] naming a lint outside this list fails. Declare the
+# policy here once instead of copying it across script, manifest, and docs.
+# allowed_inline_allows = "cast_possible_truncation,too_many_lines"

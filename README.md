@@ -63,8 +63,9 @@ Call it from whatever validation script you already run at pre-push and in CI:
 ```
 
 Requires `bash` and [ripgrep](https://github.com/BurntSushi/ripgrep). No install step, no runtime,
-no language dependency — it scans `.rs`, `.ts`, and `.tsx` sources and skips test, bench, example,
-and generated trees.
+no language dependency — it scans `.rs`, `.ts`, and `.tsx` sources by default (`extensions`
+configures any other set — `java,ts,js`, `swift`, …) and skips test, bench, example, and generated
+trees for every supported language, SwiftPM's capitalised `Tests/` included.
 
 ## Configure
 
@@ -75,6 +76,10 @@ tracker        = "your-org/your-private-tracker"  # where issues are filed
 marker         = "registre"                       # the word inside LIMITATION(...)
 ledger         = "feature-phases.yaml"            # dark-launch ledger path
 require_ledger = false                            # true = the ledger file must exist
+extensions     = "rs,ts,tsx"                      # source extensions to scan
+exclude        = "**/legacy/**"                   # extra globs on top of the built-ins
+max_file_lines = 500                              # gate 4 (opt-in): file length cap
+allowed_inline_allows = "cast_sign_loss,use_self" # gate 5 (opt-in): inline clippy allows
 ```
 
 | Environment | Overrides |
@@ -83,11 +88,15 @@ require_ledger = false                            # true = the ledger file must 
 | `REGISTRE_MARKER` | `marker` |
 | `REGISTRE_LEDGER` | `ledger` |
 | `REGISTRE_REQUIRE_LEDGER` | `require_ledger` |
+| `REGISTRE_EXTENSIONS` | `extensions` |
+| `REGISTRE_EXCLUDE` | `exclude` |
+| `REGISTRE_MAX_FILE_LINES` | `max_file_lines` |
+| `REGISTRE_ALLOWED_INLINE_ALLOWS` | `allowed_inline_allows` |
 | `REGISTRE_CONFIG` | path to the config file itself |
 
 Choose `marker` once and keep it: it is embedded in every source comment across your codebase.
 
-## The three gates
+## The gates
 
 **1 · Unregistered deferral prose.** Two families, one rule. *Confessions* admit the code is
 unfinished ("for now, return", "in a real implementation", "would be … in production").
@@ -114,6 +123,16 @@ The format is fixed and shallow on purpose: the companion workflow parses it wit
 dependency. `.github/workflows/feature-phase-review-reusable.yml` in this repo is a reusable
 GitHub Actions workflow that reads the ledger weekly and opens an issue in your tracker when a
 `review_by` date passes — so phase 1 cannot silently become forever.
+
+**4 · File length cap** *(opt-in)*. Set `max_file_lines` and any scanned file over it fails.
+A file that outgrows its cap needs a focused helper extracted, not a longer scroll — and an LLM
+author will happily keep appending to a 900-line file forever unless something says stop.
+
+**5 · Inline suppression allow-list** *(opt-in, Rust)*. Set `allowed_inline_allows` to the clippy
+lints that may be silenced inline, and any `#[allow(clippy::…)]` or `#[expect(clippy::…)]` naming
+a lint outside it fails. An inline allow silences a lint the manifest set to deny and nothing else
+notices; this keeps the policy as one declared list instead of copies drifting across a validation
+script, the manifest, and agent instructions.
 
 ```yaml
 jobs:

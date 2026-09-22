@@ -37,13 +37,21 @@
 #      one declared list instead of copies drifting across script and docs.
 #
 # USAGE
-#   limitation-gates.sh <scan-dir>...
+#   limitation-gates.sh [<scan-dir>...]
+#   limitation-gates.sh --list-files [<scan-dir>...]
 #
 #   Scans the configured source extensions under the given directories
 #   (non-existent ones are skipped, so callers may pass a superset), excluding
 #   test, bench, example, and generated trees for every supported language.
+#   With no directories, scans the ones `scan_dirs` configures.
 #
 #   Exit 0 clean, 1 violations found.
+#
+#   --list-files prints the files the gates would scan, one per line, and runs
+#   no gate. It is how another tool asks "is this file in the register's
+#   scope?" without keeping its own copy of the exclusions — a copy is how two
+#   tools come to disagree about where a marker counts. Exit 1 when nothing
+#   would be scanned, so an empty list never reads as "no markers anywhere".
 #
 # CONFIGURATION (first match wins)
 #   environment         registre.toml            default
@@ -55,6 +63,7 @@
 #                       require_ledger = true    false (checked if present)
 #   REGISTRE_EXTENSIONS extensions = "java,ts"   rs,ts,tsx
 #   REGISTRE_EXCLUDE    exclude = "**/legacy/**" none (adds to the built-ins)
+#   REGISTRE_SCAN_DIRS  scan_dirs = "src,crates" none (then directories are required)
 #   REGISTRE_MAX_FILE_LINES
 #                       max_file_lines = 500     unset (gate 4 off)
 #   REGISTRE_ALLOWED_INLINE_ALLOWS
@@ -111,6 +120,10 @@ EXTENSIONS="${REGISTRE_EXTENSIONS:-$(config_value extensions)}"
 EXTENSIONS="${EXTENSIONS:-rs,ts,tsx}"
 # Extra exclude globs on top of the built-in test/generated conventions.
 EXCLUDE_EXTRA="${REGISTRE_EXCLUDE:-$(config_value exclude)}"
+# Directories to scan when the caller names none, comma-separated. Declaring
+# them here is what lets every caller — the validation script, and any tool
+# that asks for --list-files — share one scope instead of each hard-coding it.
+SCAN_DIRS_CONFIG="${REGISTRE_SCAN_DIRS:-$(config_value scan_dirs)}"
 # File length cap for gate 4. Unset or 0 disables the gate — the cap is repo
 # policy, not something this tool can guess.
 MAX_FILE_LINES="${REGISTRE_MAX_FILE_LINES:-$(config_value max_file_lines)}"
@@ -133,16 +146,30 @@ fi
 
 MARKER_RE="LIMITATION\\(${MARKER}#[0-9]+\\):"
 
-SCAN_DIRS=()
-for d in "$@"; do
-    [ -d "$d" ] && SCAN_DIRS+=("$d")
-done
+LIST_FILES=false
+if [ "${1:-}" = "--list-files" ]; then
+    LIST_FILES=true
+    shift
+fi
 
-if [ "$#" -eq 0 ]; then
+# Directories named on the command line win; otherwise the configured ones.
+REQUESTED_DIRS=("$@")
+if [ "${#REQUESTED_DIRS[@]}" -eq 0 ] && [ -n "$SCAN_DIRS_CONFIG" ]; then
+    IFS=',' read -r -a REQUESTED_DIRS <<< "$SCAN_DIRS_CONFIG"
+fi
+
+if [ "${#REQUESTED_DIRS[@]}" -eq 0 ]; then
     echo -e "${RED}limitation-gates: no scan directories given${NC}"
-    echo "Usage: limitation-gates.sh <scan-dir>..."
+    echo "Usage: limitation-gates.sh [--list-files] <scan-dir>...  (or set scan_dirs in $CONFIG_FILE)"
     exit 1
 fi
+
+SCAN_DIRS=()
+for d in "${REQUESTED_DIRS[@]}"; do
+    d="${d#"${d%%[![:space:]]*}"}"
+    d="${d%"${d##*[![:space:]]}"}"
+    [ -n "$d" ] && [ -d "$d" ] && SCAN_DIRS+=("$d")
+done
 
 # Callers may pass a superset (e.g. "crates src packages") and the ones that do
 # not exist are skipped. But if NOTHING matched, the invocation is wrong — a
@@ -150,7 +177,7 @@ fi
 # and a gate that silently passes on a bad invocation is worse than no gate.
 if [ "${#SCAN_DIRS[@]}" -eq 0 ]; then
     echo -e "${RED}limitation-gates: none of the given paths is a directory:${NC}"
-    for d in "$@"; do echo "  - $d"; done
+    for d in "${REQUESTED_DIRS[@]}"; do echo "  - $d"; done
     echo "Nothing was scanned, so this is a failure rather than a pass."
     exit 1
 fi
@@ -194,6 +221,17 @@ rg_scoped() {
         "${INCLUDE_GLOBS[@]}" "${EXCLUDE_GLOBS[@]}" \
         2>/dev/null
 }
+
+if [ "$LIST_FILES" = true ]; then
+    SCOPE_FILES=$(rg --files "${SCAN_DIRS[@]}" "${INCLUDE_GLOBS[@]}" "${EXCLUDE_GLOBS[@]}" 2>/dev/null \
+        | sed 's#^\./##' | sort || true)
+    if [ -z "$SCOPE_FILES" ]; then
+        echo "limitation-gates: no file in scope under ${SCAN_DIRS[*]}" >&2
+        exit 1
+    fi
+    printf '%s\n' "$SCOPE_FILES"
+    exit 0
+fi
 
 echo -e "${BLUE}==== Limitation Register Gates ====${NC}"
 

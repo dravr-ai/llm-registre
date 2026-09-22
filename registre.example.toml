@@ -28,6 +28,12 @@ extensions = "rs,ts,tsx"
 # (**/tests/**, **/src/test/**, *Test.java, *.spec.ts, **/target/**, …).
 # exclude = "**/legacy/**,**/third_party/**"
 
+# Directories scanned when a caller names none, comma-separated. Declaring them
+# here lets every caller — your validation script, and any tool that asks
+# `limitation-gates.sh --list-files` — share one scope instead of each keeping
+# its own list.
+# scan_dirs = "src,crates,packages"
+
 # File length cap (gate 4). Unset or 0 = gate off; when set, any scanned file
 # over this many lines fails — extract a focused helper instead.
 # max_file_lines = 500

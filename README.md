@@ -62,6 +62,9 @@ Call it from whatever validation script you already run at pre-push and in CI:
 ./.registre/limitation-gates.sh src crates packages
 ```
 
+or declare the directories once in `registre.toml` (`scan_dirs`) and call it with none — then every
+caller scans the same tree.
+
 Requires `bash` and [ripgrep](https://github.com/BurntSushi/ripgrep). No install step, no runtime,
 no language dependency — it scans `.rs`, `.ts`, and `.tsx` sources by default (`extensions`
 configures any other set — `java,ts,js`, `swift`, …) and skips test, bench, example, and generated
@@ -78,6 +81,7 @@ ledger         = "feature-phases.yaml"            # dark-launch ledger path
 require_ledger = false                            # true = the ledger file must exist
 extensions     = "rs,ts,tsx"                      # source extensions to scan
 exclude        = "**/legacy/**"                   # extra globs on top of the built-ins
+scan_dirs      = "src,crates,packages"            # directories scanned when a caller names none
 max_file_lines = 500                              # gate 4 (opt-in): file length cap
 allowed_inline_allows = "cast_sign_loss,use_self" # gate 5 (opt-in): inline clippy allows
 ```
@@ -90,11 +94,31 @@ allowed_inline_allows = "cast_sign_loss,use_self" # gate 5 (opt-in): inline clip
 | `REGISTRE_REQUIRE_LEDGER` | `require_ledger` |
 | `REGISTRE_EXTENSIONS` | `extensions` |
 | `REGISTRE_EXCLUDE` | `exclude` |
+| `REGISTRE_SCAN_DIRS` | `scan_dirs` |
 | `REGISTRE_MAX_FILE_LINES` | `max_file_lines` |
 | `REGISTRE_ALLOWED_INLINE_ALLOWS` | `allowed_inline_allows` |
 | `REGISTRE_CONFIG` | path to the config file itself |
 
 Choose `marker` once and keep it: it is embedded in every source comment across your codebase.
+
+### Asking what is in scope
+
+```bash
+./.registre/limitation-gates.sh --list-files
+```
+
+prints the files the gates scan, one per line, and runs no gate. A tool that needs to know whether a
+marker counts — a completion check crediting a registered issue, an editor integration — should ask
+this rather than keep its own copy of the exclusions: two copies drift, and then a marker one tool
+honours is invisible to the other. It exits 1 when nothing is in scope, so an empty list never
+reads as "no markers anywhere".
+
+### Where a marker goes when the gap is in a test
+
+Test, bench, example and generated trees are outside the scan, so a marker there is never validated
+and never counts. A gap in *coverage* is a property of the code that goes uncovered: register it at
+that production item, where the next person to change it will read it — "LIMITATION(registre#n):
+the live eval lane never executes this function, so a reordering here is caught only by …".
 
 ## The gates
 

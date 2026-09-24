@@ -43,3 +43,16 @@ extensions = "rs,ts,tsx"
 # #[expect(clippy::…)] naming a lint outside this list fails. Declare the
 # policy here once instead of copying it across script, manifest, and docs.
 # allowed_inline_allows = "cast_possible_truncation,too_many_lines"
+
+# Tracker reconciliation (gate 6): every marker in scope must name an issue
+# that exists on `tracker`, is open, and carries `label`. It reads the tracker
+# over the network (GitHub REST through the gh CLI, with gh's own
+# authentication), so it is off by default; `--verify-tracker` turns it on for
+# one run, which is how a scheduled job holding a read token calls it. Once on
+# it fails closed: an unreadable tracker fails the gate rather than skipping it.
+# verify_tracker = false
+
+# The label every register entry carries on the tracker — what separates a
+# registered limitation from an ordinary issue a marker happens to cite. A
+# bare word: values are read without whitespace.
+# label = "limitation"

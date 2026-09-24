@@ -1,0 +1,26 @@
+# ABOUTME: Runs the gates' own suite and shellcheck on every push and pull request
+# ABOUTME: The suite stubs the tracker, so it needs no token and never reaches the network
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # jq and shellcheck ship on the runner image; ripgrep does not.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: shellcheck
+        run: shellcheck -S warning limitation-gates.sh limitation-gates.test.sh
+      - name: suite
+        run: bash limitation-gates.test.sh

@@ -35,9 +35,13 @@
 #   5. Inline suppression allow-list (opt-in): #[allow(clippy::…)] or
 #      #[expect(clippy::…)] naming a lint outside allowed_inline_allows fails —
 #      one declared list instead of copies drifting across script and docs.
+#   6. Tracker reconciliation (opt-in, online): every marker in scope must name
+#      an issue that exists on the configured tracker, is open, and carries the
+#      register label. Gates 1-5 read only the source tree, so a marker citing
+#      a closed or never-filed issue passes them and keeps exempting its prose.
 #
 # USAGE
-#   limitation-gates.sh [<scan-dir>...]
+#   limitation-gates.sh [--verify-tracker] [<scan-dir>...]
 #   limitation-gates.sh --list-files [<scan-dir>...]
 #
 #   Scans the configured source extensions under the given directories
@@ -46,6 +50,13 @@
 #   With no directories, scans the ones `scan_dirs` configures.
 #
 #   Exit 0 clean, 1 violations found.
+#
+#   --verify-tracker turns gate 6 on for this run. It reads the tracker over
+#   the network — GitHub's REST API through the gh CLI, authenticated the way
+#   gh is (GH_TOKEN, or a prior `gh auth login`) — so it is never on by
+#   default. Once on it fails closed: no tracker configured, no gh, a token
+#   that cannot read the tracker, or an answer it cannot parse all fail the
+#   gate, because each of them means nothing was verified.
 #
 #   --list-files prints the files the gates would scan, one per line, and runs
 #   no gate. It is how another tool asks "is this file in the register's
@@ -69,6 +80,10 @@
 #   REGISTRE_ALLOWED_INLINE_ALLOWS
 #                       allowed_inline_allows = "lint_a,lint_b"
 #                                                unset (gate 5 off)
+#   REGISTRE_VERIFY_TRACKER
+#                       verify_tracker = true    false (gate 6 off unless
+#                                                --verify-tracker is passed)
+#   REGISTRE_LABEL      label = "limitation"     limitation
 #
 # The marker word is configurable but should be treated as permanent once
 # chosen: it is embedded in every source comment across the codebase.
@@ -77,7 +92,6 @@ set -e
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
@@ -136,6 +150,16 @@ esac
 # Clippy lints that may be silenced inline, comma-separated bare names, for
 # gate 5. Unset disables the gate.
 ALLOWED_INLINE_ALLOWS="${REGISTRE_ALLOWED_INLINE_ALLOWS:-$(config_value allowed_inline_allows)}"
+# Gate 6 reads the tracker over the network, so it is off unless the repo or
+# the caller asks for it. A pre-push hook usually should not (it would need a
+# token on every developer machine); a scheduled job holding a read token
+# should.
+VERIFY_TRACKER="${REGISTRE_VERIFY_TRACKER:-$(config_value verify_tracker)}"
+VERIFY_TRACKER="${VERIFY_TRACKER:-false}"
+# The label every register entry carries on the tracker. It is what separates
+# a registered limitation from an ordinary bug that a marker happens to cite.
+LABEL="${REGISTRE_LABEL:-$(config_value label)}"
+LABEL="${LABEL:-limitation}"
 
 # Where to tell the author to file the issue.
 if [ -n "$TRACKER" ]; then
@@ -145,12 +169,60 @@ else
 fi
 
 MARKER_RE="LIMITATION\\(${MARKER}#[0-9]+\\):"
+# The same marker with its issue number captured, for gate 6.
+MARKER_ISSUE_RE="LIMITATION\\(${MARKER}#([0-9]+)\\):"
 
+usage() {
+    echo "Usage: limitation-gates.sh [--verify-tracker] [<scan-dir>...]"
+    echo "       limitation-gates.sh --list-files [<scan-dir>...]"
+    echo "  (with no directories, scan_dirs in $CONFIG_FILE is scanned)"
+}
+
+# Options come before the directories, and anything else starting with a dash
+# is refused rather than taken for a directory — before or after one. Directory
+# arguments that do not exist are skipped, so a flag read as a directory would
+# be dropped without a word, and a gate that ignores the option it was asked
+# to run is a pass that verified nothing. `--` ends the options for a
+# directory whose name starts with a dash.
 LIST_FILES=false
-if [ "${1:-}" = "--list-files" ]; then
-    LIST_FILES=true
-    shift
+VERIFY_FLAG=false
+END_OF_OPTIONS=false
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --list-files) LIST_FILES=true; shift ;;
+        --verify-tracker) VERIFY_FLAG=true; shift ;;
+        --) shift; END_OF_OPTIONS=true; break ;;
+        -*)
+            echo -e "${RED}limitation-gates: unknown option '$1'${NC}"
+            usage
+            exit 1 ;;
+        *) break ;;
+    esac
+done
+if [ "$END_OF_OPTIONS" = false ]; then
+    for arg in "$@"; do
+        case "$arg" in
+            -*)
+                echo -e "${RED}limitation-gates: options go before the directories, got '$arg' after one${NC}"
+                usage
+                exit 1 ;;
+        esac
+    done
 fi
+
+if [ "$VERIFY_FLAG" = true ]; then
+    if [ "$LIST_FILES" = true ]; then
+        echo -e "${RED}limitation-gates: --list-files runs no gate, so it cannot be combined with --verify-tracker${NC}"
+        exit 1
+    fi
+    VERIFY_TRACKER=true
+fi
+case "$VERIFY_TRACKER" in
+    true|false) ;;
+    *)
+        echo -e "${RED}limitation-gates: verify_tracker must be true or false, got '${VERIFY_TRACKER}'${NC}"
+        exit 1 ;;
+esac
 
 # Directories named on the command line win; otherwise the configured ones.
 REQUESTED_DIRS=("$@")
@@ -160,7 +232,7 @@ fi
 
 if [ "${#REQUESTED_DIRS[@]}" -eq 0 ]; then
     echo -e "${RED}limitation-gates: no scan directories given${NC}"
-    echo "Usage: limitation-gates.sh [--list-files] <scan-dir>...  (or set scan_dirs in $CONFIG_FILE)"
+    usage
     exit 1
 fi
 
@@ -360,6 +432,172 @@ if [ -n "$ALLOWED_INLINE_ALLOWS" ]; then
     else
         gate_pass "All inline clippy suppressions are on the declared list"
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# Gate 6 (opt-in, online): every marker names an open register entry
+# ---------------------------------------------------------------------------
+# Gates 1 and 2 check a marker's shape; no offline check can see the other half
+# of the pair. A marker whose issue was closed keeps exempting its prose after
+# the gap stopped being tracked, one citing a number that was never filed was
+# never tracked at all, and `rg "LIMITATION\(registre#"` lists both as known
+# gaps — so the inventory the register promises is wrong in both directions.
+#
+# Every state comes from one paginated REST listing of the tracker's labelled
+# issues, never a call per marker. Only when some marker's issue is missing
+# from it is the whole tracker listed, once, to say whether that issue does not
+# exist, lacks the label, or is a pull request. A marker passes only when a
+# listing positively shows its issue open and labelled; a listing that failed,
+# or came back in a shape this cannot read, fails the gate instead of leaving
+# markers unjudged.
+# A subshell with the C locale, so the loop walks bytes: a UTF-8 label is
+# percent-encoded byte by byte, as a URL needs, not code point by code point.
+url_encode() ( # <text> -> percent-encoded for a query-string value
+    export LC_ALL=C
+    local text="$1" out="" char i
+    for ((i = 0; i < ${#text}; i++)); do
+        char="${text:i:1}"
+        case "$char" in
+            [A-Za-z0-9._~-]) out="${out}${char}" ;;
+            # Masked to a byte: bash 3.2 sign-extends a high byte to 64 bits.
+            *) out="${out}$(printf '%%%02X' "$(( $(printf '%d' "'$char") & 255 ))")" ;;
+        esac
+    done
+    printf '%s' "$out"
+)
+
+# Write "number<TAB>state<TAB>issue|pr" for every issue on the tracker, or only
+# those carrying the label when one is given. REST rather than GraphQL: some
+# proxies and fine-grained tokens serve the one and refuse the other.
+list_tracker_issues() { # <out-file> <err-file> [label]
+    local url="repos/${TRACKER}/issues?state=all&per_page=100"
+    [ -n "${3:-}" ] && url="${url}&labels=$(url_encode "$3")"
+    gh api --paginate "$url" \
+        --jq '.[] | [(.number | tostring), .state, (if .pull_request then "pr" else "issue" end)] | @tsv' \
+        > "$1" 2> "$2"
+}
+
+tracker_answer_readable() { # <file> -> 0 when every line has the listed shape
+    ! grep -Ev $'^[0-9]+\t(open|closed)\t(issue|pr)$' "$1" | grep -q .
+}
+
+# One line per marker site: "<verdict><TAB><path:line><TAB><number>". The
+# verdict is `unlisted` while only the labelled listing has been read and the
+# issue is not in it; once the whole tracker has been read it is resolved to
+# missing, unlabelled, unlabelled-closed or pr.
+classify_marker_sites() { # <labelled> <all> <all-was-read: 0|1> <sites>
+    awk -F'\t' -v all_read="$3" '
+        FILENAME == ARGV[1] { lstate[$1] = $2; lkind[$1] = $3; next }
+        FILENAME == ARGV[2] { astate[$1] = $2; akind[$1] = $3; next }
+        {
+            n = $2
+            if (n in lkind) {
+                if (lkind[n] == "pr") verdict = "pr"
+                else if (lstate[n] == "open") verdict = "ok"
+                else verdict = "closed"
+            } else if (all_read != 1) {
+                verdict = "unlisted"
+            } else if (n in akind) {
+                if (akind[n] == "pr") verdict = "pr"
+                else if (astate[n] == "open") verdict = "unlabelled"
+                else verdict = "unlabelled-closed"
+            } else {
+                verdict = "missing"
+            }
+            print verdict "\t" $1 "\t" n
+        }
+    ' "$1" "$2" "$4"
+}
+
+VERIFY_WORK=""
+cleanup_verify_work() { [ -n "$VERIFY_WORK" ] && rm -rf "$VERIFY_WORK"; return 0; }
+
+verify_markers_against_tracker() {
+    local sites labelled all err verdicts raw scan_status=0 site_count issue_count bad bad_count
+    if [ -z "$TRACKER" ]; then
+        gate_fail "Tracker verification is on but no tracker is configured — set tracker in $CONFIG_FILE (or REGISTRE_TRACKER); nothing was verified"
+        return 0
+    fi
+    if ! command -v gh >/dev/null 2>&1; then
+        gate_fail "Tracker verification needs the gh CLI to read $TRACKER, and it is not installed — nothing was verified"
+        return 0
+    fi
+    VERIFY_WORK=$(mktemp -d "${TMPDIR:-/tmp}/registre-verify.XXXXXX") || {
+        gate_fail "Tracker verification could not create a work directory — nothing was verified"
+        return 0
+    }
+    trap cleanup_verify_work EXIT
+    sites="$VERIFY_WORK/sites" labelled="$VERIFY_WORK/labelled" all="$VERIFY_WORK/all"
+    err="$VERIFY_WORK/err" verdicts="$VERIFY_WORK/verdicts"
+    : > "$all"
+
+    # rg exits 1 for "no match" and 2 for an error; only the error means the
+    # scan itself cannot be trusted.
+    raw=$(rg_scoped -n -o -r '$1' "$MARKER_ISSUE_RE") || scan_status=$?
+    if [ "$scan_status" -gt 1 ]; then
+        gate_fail "Tracker verification could not scan for markers (rg exit $scan_status) — nothing was verified"
+        return 0
+    fi
+    # "path:line:number" -> "path:line<TAB>number"; the path may hold colons.
+    printf '%s\n' "$raw" | awk -F: 'NF >= 3 {
+        n = $NF; site = $0; sub(/:[0-9]+$/, "", site); print site "\t" n
+    }' > "$sites"
+
+    if ! list_tracker_issues "$labelled" "$err" "$LABEL"; then
+        gate_fail "Cannot read $TRACKER — nothing was verified: $(head -3 "$err" | tr '\n' ' ')"
+        return 0
+    fi
+    if ! tracker_answer_readable "$labelled"; then
+        gate_fail "Unreadable answer listing $TRACKER issues labelled '$LABEL' — nothing was verified"
+        return 0
+    fi
+    classify_marker_sites "$labelled" "$all" 0 "$sites" > "$verdicts"
+
+    if grep -q '^unlisted' "$verdicts"; then
+        if ! list_tracker_issues "$all" "$err"; then
+            gate_fail "Cannot read $TRACKER — nothing was verified: $(head -3 "$err" | tr '\n' ' ')"
+            return 0
+        fi
+        if ! tracker_answer_readable "$all"; then
+            gate_fail "Unreadable answer listing $TRACKER issues — nothing was verified"
+            return 0
+        fi
+        if [ ! -s "$all" ]; then
+            gate_fail "$TRACKER answered with no issues at all — the wrong tracker, or a token that sees an empty one; nothing was verified"
+            return 0
+        fi
+        classify_marker_sites "$labelled" "$all" 1 "$sites" > "$verdicts"
+    fi
+
+    site_count=$(grep -c . "$sites" || true)
+    issue_count=$(cut -f2 "$sites" | sort -u | grep -c . || true)
+    bad=$(awk -F'\t' -v tracker="$TRACKER" -v label="$LABEL" -v marker="$MARKER" '
+        $1 == "ok" { next }
+        {
+            if ($1 == "closed") why = "closed"
+            else if ($1 == "missing") why = "no such issue on " tracker
+            else if ($1 == "unlabelled") why = "open, but not labelled " label
+            else if ($1 == "unlabelled-closed") why = "closed, and not labelled " label
+            else if ($1 == "pr") why = "a pull request, not an issue"
+            else why = "unresolved"
+            printf "%s  %s#%s: %s\n", $2, marker, $3, why
+        }
+    ' "$verdicts")
+    bad_count=$(printf '%s' "$bad" | grep -c . || true)
+
+    if [ "${bad_count:-0}" -gt 0 ]; then
+        echo -e "${RED}LIMITATION marker(s) whose issue is not an open '${LABEL}' entry on ${TRACKER} — delete the marker if the gap is fixed; otherwise reopen or refile the entry and point the marker at it:${NC}"
+        printf '%s\n' "$bad" | head -20
+        gate_fail "$bad_count LIMITATION marker(s) name no open '${LABEL}' issue on $TRACKER"
+    elif [ "${site_count:-0}" -eq 0 ]; then
+        gate_pass "No LIMITATION markers in scope; $TRACKER is readable"
+    else
+        gate_pass "All $site_count LIMITATION marker(s) name an open '${LABEL}' issue on $TRACKER ($issue_count issue(s))"
+    fi
+}
+
+if [ "$VERIFY_TRACKER" = true ]; then
+    verify_markers_against_tracker
 fi
 
 if [ "$GATES_FAILED" = true ]; then

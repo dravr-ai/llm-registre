@@ -68,7 +68,11 @@ caller scans the same tree.
 Requires `bash` and [ripgrep](https://github.com/BurntSushi/ripgrep). No install step, no runtime,
 no language dependency — it scans `.rs`, `.ts`, and `.tsx` sources by default (`extensions`
 configures any other set — `java,ts,js`, `swift`, …) and skips test, bench, example, and generated
-trees for every supported language, SwiftPM's capitalised `Tests/` included.
+trees for every supported language, SwiftPM's capitalised `Tests/` included. Gate 6, which is
+opt-in, also needs the [`gh` CLI](https://cli.github.com) and a token that can read your tracker.
+
+`bash limitation-gates.test.sh` runs the tool's own suite: a throwaway repo per case, with a stub
+`gh` standing in for the tracker, so it needs `jq` as well and never touches the network.
 
 ## Configure
 
@@ -84,6 +88,8 @@ exclude        = "**/legacy/**"                   # extra globs on top of the bu
 scan_dirs      = "src,crates,packages"            # directories scanned when a caller names none
 max_file_lines = 500                              # gate 4 (opt-in): file length cap
 allowed_inline_allows = "cast_sign_loss,use_self" # gate 5 (opt-in): inline clippy allows
+verify_tracker = false                            # gate 6 (opt-in, online): check markers against the tracker
+label          = "limitation"                     # the label every register entry carries
 ```
 
 | Environment | Overrides |
@@ -97,6 +103,8 @@ allowed_inline_allows = "cast_sign_loss,use_self" # gate 5 (opt-in): inline clip
 | `REGISTRE_SCAN_DIRS` | `scan_dirs` |
 | `REGISTRE_MAX_FILE_LINES` | `max_file_lines` |
 | `REGISTRE_ALLOWED_INLINE_ALLOWS` | `allowed_inline_allows` |
+| `REGISTRE_VERIFY_TRACKER` | `verify_tracker` |
+| `REGISTRE_LABEL` | `label` |
 | `REGISTRE_CONFIG` | path to the config file itself |
 
 Choose `marker` once and keep it: it is embedded in every source comment across your codebase.
@@ -148,16 +156,6 @@ dependency. `.github/workflows/feature-phase-review-reusable.yml` in this repo i
 GitHub Actions workflow that reads the ledger weekly and opens an issue in your tracker when a
 `review_by` date passes — so phase 1 cannot silently become forever.
 
-**4 · File length cap** *(opt-in)*. Set `max_file_lines` and any scanned file over it fails.
-A file that outgrows its cap needs a focused helper extracted, not a longer scroll — and an LLM
-author will happily keep appending to a 900-line file forever unless something says stop.
-
-**5 · Inline suppression allow-list** *(opt-in, Rust)*. Set `allowed_inline_allows` to the clippy
-lints that may be silenced inline, and any `#[allow(clippy::…)]` or `#[expect(clippy::…)]` naming
-a lint outside it fails. An inline allow silences a lint the manifest set to deny and nothing else
-notices; this keeps the policy as one declared list instead of copies drifting across a validation
-script, the manifest, and agent instructions.
-
 ```yaml
 jobs:
   review:
@@ -170,6 +168,57 @@ jobs:
       tracker_token: ${{ secrets.YOUR_TRACKER_TOKEN }}
 ```
 
+**4 · File length cap** *(opt-in)*. Set `max_file_lines` and any scanned file over it fails.
+A file that outgrows its cap needs a focused helper extracted, not a longer scroll — and an LLM
+author will happily keep appending to a 900-line file forever unless something says stop.
+
+**5 · Inline suppression allow-list** *(opt-in, Rust)*. Set `allowed_inline_allows` to the clippy
+lints that may be silenced inline, and any `#[allow(clippy::…)]` or `#[expect(clippy::…)]` naming
+a lint outside it fails. An inline allow silences a lint the manifest set to deny and nothing else
+notices; this keeps the policy as one declared list instead of copies drifting across a validation
+script, the manifest, and agent instructions.
+
+**6 · Tracker reconciliation** *(opt-in, online)*. Gates 1–5 read only the source tree, so they
+check a marker's *shape* and nothing else: a marker citing an issue that was closed keeps exempting
+its prose after the gap stopped being tracked, and one citing a number that was never filed was never
+tracked at all — while `rg "LIMITATION\(registre#"` lists both as known gaps. With this gate on,
+every marker in scope must name an issue that **exists** on `tracker`, is **open**, and carries
+`label`. A marker that fails names its file and line and says which of those it is: closed, no such
+issue, open but unlabelled, or a pull request.
+
+It reads the tracker over the network — GitHub's REST API through the
+[`gh` CLI](https://cli.github.com), authenticated however `gh` is (`GH_TOKEN`, or `gh auth login`) —
+so it is off unless asked for: `--verify-tracker` on the command line, `verify_tracker = true`, or
+`REGISTRE_VERIFY_TRACKER=true`. Issue states come from one paginated listing of the labelled issues
+(`issues?state=all&labels=…&per_page=100`), never a call per marker; only when a marker's issue is
+not in it is the whole tracker listed once, to say why. Once on, it **fails closed**: no tracker
+configured, no `gh`, a token that cannot read the tracker, or an answer it cannot parse each fail the
+gate, because each means nothing was verified. A marker passes only when a listing positively shows
+its issue open and labelled.
+
+Its scope is the other gates' scope, so a marker in a test fixture — citing a number that was never
+filed, on purpose — is outside it by the same rule that keeps it out of gate 1, with no exemption list.
+
+A private tracker needs a token that can read it, which a pre-push hook on every developer machine
+usually should not require. The natural home is a scheduled job holding a read-only token:
+
+```yaml
+on:
+  schedule:
+    - cron: "37 7 * * 1"   # weekly; any minute but :00
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - run: ./.registre/limitation-gates.sh --verify-tracker
+        env:
+          GH_TOKEN: ${{ secrets.YOUR_TRACKER_READ_TOKEN }}
+```
+
 ## Workflow
 
 1. You are about to write a comment explaining why something is incomplete. **Stop.**
@@ -178,12 +227,14 @@ jobs:
    the correct fix looks like.
 4. Put `LIMITATION(registre#<n>):` on the comment line that names the limited item.
 5. When the gap is fixed, delete the marker in the same change and close the issue. A stale marker
-   still exempts prose, so exhausted markers are debt too.
+   still exempts prose, so exhausted markers are debt too — gate 6 finds the ones whose issue was
+   closed without them.
 
 ## What this does not do
 
-These gates are **per-change**. They stop new debt at authoring time and cannot reach the standing
-stock of defects that live *between* diffs — a handler nothing reaches, an override nothing reads,
+Gates 1–5 are **per-change**, and gate 6 reconciles only what was marked. They stop new debt at
+authoring time and keep the marked inventory honest, but cannot reach the standing stock of
+defects that live *between* diffs — a handler nothing reaches, an override nothing reads,
 two components each locally correct and jointly wrong. Those come out of periodic adversarial
 review, not a grep. A green gate means no new unregistered debt; it does not mean the codebase is
 clean.
